@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Personal data - never commit these
+my_cv.txt
+tailored_cv.txt
+cover_letter.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
