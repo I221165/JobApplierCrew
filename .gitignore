@@ -9,6 +9,15 @@ tailored_cv.pdf
 cover_letter.txt
 latex_compile_error.json
 
+# Cache
+.cache/
+
+# Database
+*.db
+
+# Generated PDFs from API runs
+generated/
+
 # Python
 __pycache__/
 *.pyc

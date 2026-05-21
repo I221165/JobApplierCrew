@@ -4,3 +4,7 @@ python-dotenv==1.2.2
 browser-use
 playwright
 langchain-google-genai
+fastapi
+uvicorn
+sqlmodel
+sse-starlette
