@@ -4,7 +4,10 @@
 # Personal data - never commit these
 my_cv.txt
 tailored_cv.txt
+tailored_cv.tex
+tailored_cv.pdf
 cover_letter.txt
+latex_compile_error.json
 
 # Python
 __pycache__/
