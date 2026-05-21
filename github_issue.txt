@@ -1,0 +1,126 @@
+================================================================================
+TITLE:
+================================================================================
+[BUG] cache_breakpoint injected into messages for non-Anthropic providers (Groq, OpenAI-compatible)
+
+
+================================================================================
+DESCRIPTION:
+================================================================================
+### Problem:
+mark_cache_breakpoint() is called on all messages in agent_executor.py regardless of provider. Only the Anthropic adapter translates/strips this flag. All other providers (Groq, OpenAI-compatible, etc.) receive `cache_breakpoint: true` in the raw message dict, which their APIs reject.
+
+### Error:
+```
+GroqException - 'messages.0': property 'cache_breakpoint' is unsupported
+```
+
+### Root cause:
+crewai/llms/cache.py defines strip_cache_breakpoint() but it is never called for non-Anthropic providers.
+
+### Workaround:
+```python
+import crewai.llms.cache as _crewai_cache
+_crewai_cache.mark_cache_breakpoint = lambda msg: msg
+```
+
+
+================================================================================
+STEPS TO REPRODUCE:
+================================================================================
+1. Install crewai==1.14.4 and set a GROQ_API_KEY in your .env
+2. Create a basic crew using a Groq model:
+```python
+from crewai import Agent, Task, Crew, LLM
+llm = LLM(model="groq/llama-3.3-70b-versatile")
+agent = Agent(role="Researcher", goal="Research things", backstory="You are a researcher", llm=llm)
+task = Task(description="Write a summary of AI trends", expected_output="A short summary", agent=agent)
+crew = Crew(agents=[agent], tasks=[task])
+crew.kickoff()
+```
+3. Run the script
+4. Crew fails immediately with the error above
+
+
+================================================================================
+EXPECTED BEHAVIOR:
+================================================================================
+The crew runs successfully. The agent sends clean messages to the Groq API and gets a response back with no errors.
+
+
+================================================================================
+SCREENSHOTS / CODE SNIPPETS:
+================================================================================
+Full traceback:
+```
+litellm.BadRequestError: GroqException - {"error": {"message": "'messages.0': for 'role:system'
+the following must be satisfied[('messages.0': property 'cache_breakpoint' is unsupported)]",
+"type": "invalid_request_error"}}
+```
+
+The injected message looks like this before being sent to Groq:
+```json
+{
+  "role": "system",
+  "content": "You are a researcher...",
+  "cache_breakpoint": true
+}
+```
+
+
+================================================================================
+OPERATING SYSTEM:
+================================================================================
+Windows 10
+
+
+================================================================================
+PYTHON VERSION:
+================================================================================
+3.13
+
+
+================================================================================
+CREWAI VERSION:
+================================================================================
+1.14.4
+
+
+================================================================================
+CREWAI TOOLS VERSION:
+================================================================================
+1.14.4
+
+
+================================================================================
+VIRTUAL ENVIRONMENT:
+================================================================================
+venv
+
+
+================================================================================
+EVIDENCE:
+================================================================================
+mark_cache_breakpoint() is imported and called unconditionally in:
+- crewai/experimental/agent_executor.py (lines 2589, 2595, 2600, 2603, 2607)
+- crewai/agents/crew_agent_executor.py (lines 177, 190, 195, 200)
+
+strip_cache_breakpoint() is defined in crewai/llms/cache.py but never called anywhere outside of that file.
+The Anthropic provider (crewai/llms/providers/anthropic/completion.py) handles cache_breakpoint correctly,
+but there is no equivalent handling in the OpenAI, OpenAI-compatible, or Groq providers.
+
+
+================================================================================
+POSSIBLE SOLUTION:
+================================================================================
+Call strip_cache_breakpoint() in the OpenAI / OpenAI-compatible provider adapters before sending
+messages to the API, the same way the Anthropic adapter handles the flag. This would strip the
+cache_breakpoint key from messages for any provider that does not natively support it.
+
+
+================================================================================
+ADDITIONAL CONTEXT:
+================================================================================
+This affects anyone using CrewAI 1.14.4 with any non-Anthropic provider (Groq, OpenAI-compatible
+endpoints, etc.). The bug makes it impossible to run a crew with Groq out of the box without the
+monkey-patch workaround listed above.
