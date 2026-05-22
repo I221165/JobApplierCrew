@@ -4,9 +4,10 @@ import json
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -15,7 +16,8 @@ from sse_starlette.sse import EventSourceResponse
 
 load_dotenv()
 
-from api.db import Application, Job, get_session, init_db
+from api.db import Application, Job, Notification, SavedSearch, get_session, init_db
+from api.scheduler import start_scheduler, stop_scheduler
 from api.tasks import submit_application
 from services.analysis import screen_job
 from services.scrape import scrape_job
@@ -25,7 +27,9 @@ from services.search import search_jobs
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    start_scheduler()
     yield
+    stop_scheduler()
 
 
 app = FastAPI(title="Job Applier API", lifespan=lifespan)
@@ -54,10 +58,44 @@ class ApplyRequest(BaseModel):
     latex_template: str | None = None
 
 
+class SavedSearchRequest(BaseModel):
+    role: str
+    location: str
+    cv: str
+    max_jobs: int = 5
+    min_score: int = 60
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"status": "ok", "service": "job-applier"}
+
+
+@app.post("/cv/parse")
+async def parse_cv(file: UploadFile = File(...)):
+    """Accept a PDF (or plain text) upload, return extracted text. No persistence — the frontend stores it in localStorage."""
+    name = (file.filename or "").lower()
+    raw = await file.read()
+    if name.endswith(".pdf"):
+        import io
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(io.BytesIO(raw))
+            text = "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+            if not text:
+                raise HTTPException(422, "Could not extract text from this PDF (it may be scanned/image-only).")
+            return {"text": text, "pages": len(reader.pages)}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"Failed to parse PDF: {e}")
+    if name.endswith(".txt") or file.content_type == "text/plain":
+        try:
+            return {"text": raw.decode("utf-8"), "pages": 1}
+        except UnicodeDecodeError:
+            raise HTTPException(400, "Could not decode text file as UTF-8.")
+    raise HTTPException(415, "Unsupported file type. Upload a .pdf or .txt file.")
 
 
 @app.post("/search")
@@ -193,6 +231,90 @@ async def stream_application(app_id: str):
             await asyncio.sleep(1)
 
     return EventSourceResponse(event_generator())
+
+
+@app.post("/searches")
+def create_saved_search(req: SavedSearchRequest):
+    sid = uuid.uuid4().hex
+    with get_session() as session:
+        session.add(SavedSearch(
+            id=sid,
+            role=req.role,
+            location=req.location,
+            max_jobs=req.max_jobs,
+            min_score=req.min_score,
+            cv_snapshot=req.cv,
+        ))
+        session.commit()
+    return {"id": sid}
+
+
+@app.get("/searches")
+def list_saved_searches():
+    with get_session() as session:
+        rows = session.exec(select(SavedSearch).order_by(SavedSearch.created_at.desc())).all()
+        # exclude cv_snapshot from list view (large)
+        return [
+            {k: v for k, v in r.model_dump().items() if k != "cv_snapshot"}
+            for r in rows
+        ]
+
+
+@app.delete("/searches/{search_id}")
+def delete_saved_search(search_id: str):
+    with get_session() as session:
+        row = session.get(SavedSearch, search_id)
+        if row is None:
+            raise HTTPException(404, "Saved search not found")
+        session.delete(row)
+        session.commit()
+    return {"status": "deleted"}
+
+
+@app.post("/searches/{search_id}/run")
+def run_saved_search_now(search_id: str):
+    """Trigger one saved search immediately (instead of waiting for the scheduler)."""
+    from api.scheduler import _run_one_saved_search
+    with get_session() as session:
+        s = session.get(SavedSearch, search_id)
+        if s is None:
+            raise HTTPException(404, "Saved search not found")
+        status = _run_one_saved_search(s)
+        s.last_run_at = datetime.utcnow()
+        s.last_run_status = status
+        session.add(s)
+        session.commit()
+    return {"status": status}
+
+
+@app.get("/notifications")
+def list_notifications(unread_only: bool = False):
+    """Notifications joined with their job details for direct display."""
+    with get_session() as session:
+        stmt = select(Notification).order_by(Notification.created_at.desc())
+        if unread_only:
+            stmt = stmt.where(Notification.read == False)  # noqa: E712
+        notifs = session.exec(stmt).all()
+        out = []
+        for n in notifs:
+            job = session.get(Job, n.job_id)
+            out.append({
+                **n.model_dump(),
+                "job": job.model_dump() if job else None,
+            })
+        return out
+
+
+@app.post("/notifications/{notif_id}/read")
+def mark_notification_read(notif_id: str):
+    with get_session() as session:
+        n = session.get(Notification, notif_id)
+        if n is None:
+            raise HTTPException(404, "Notification not found")
+        n.read = True
+        session.add(n)
+        session.commit()
+    return {"status": "ok"}
 
 
 @app.get("/applications/{app_id}/pdf")

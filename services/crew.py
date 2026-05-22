@@ -31,10 +31,14 @@ def _agents() -> dict[str, Agent]:
         ),
         "cover_letter_writer": Agent(
             role="Cover Letter Writer",
-            goal="Write a targeted cover letter that directly addresses the job's must-have requirements",
+            goal="Write a sharply focused cover letter that addresses ONLY the target role's requirements, never bleeding in unrelated CV experience",
             backstory=(
-                "You write cover letters that get callbacks. You reference specific requirements and match them "
-                "to the candidate's evidence."
+                "You write cover letters that get callbacks. Your single most important discipline: "
+                "you stay laser-focused on the role being applied for. If a candidate has DevOps AND AI "
+                "experience and applies for an AI role, you write an AI-only letter. Mentioning the wrong "
+                "domain confuses recruiters and looks like a generic mass-application. You quantify impact "
+                "with numbers, name specific technologies, and never use filler phrases like 'I am passionate "
+                "about' or 'I am writing to apply for'. You match the company's tone exactly."
             ),
             llm=llm,
             verbose=True,
@@ -91,15 +95,55 @@ def build_application(cv: str, job_analysis: JobAnalysis) -> tuple[GapAnalysis, 
     )
 
     write_cover_letter = Task(
-        description="""
-        Write a cover letter addressing the must-have requirements from the job analysis.
-        Use the strong matches from the gap analysis as your evidence.
-        - Strong subject line
-        - 3-4 paragraphs: hook → match strong requirements → address weak areas honestly → close
-        - Match the company tone
-        - No cringe enthusiasm
+        description=f"""
+        Write a cover letter for the role: "{job_analysis.actual_title}"
+        Company tone: {job_analysis.tone}
+        Must-have requirements for this role: {', '.join(job_analysis.must_have)}
+
+        STRICT FOCUS RULE (most important):
+        The candidate may have many skills across multiple domains. The cover letter must ONLY
+        mention skills, projects, and experience that map to a "strong_match" in the gap analysis
+        from the previous task. Do NOT pull in adjacent or unrelated experience from the CV,
+        even if it's impressive. If the role is "AI Engineer", do not talk about DevOps work.
+        If the role is "DevOps", do not talk about ML work. One letter = one focus.
+
+        LENGTH: 250-350 words total. Hard cap at 400. Recruiters scan in ~8 seconds.
+
+        STRUCTURE (4 paragraphs):
+
+        Paragraph 1 — Opening hook (2-3 sentences):
+          - Lead with the single strongest qualification, not "I am writing to apply..."
+          - State the role you're applying for naturally
+          - One concrete fact about why this candidate fits
+
+        Paragraph 2 — Evidence (4-5 sentences):
+          - Pick the 2-3 STRONGEST matches from the gap analysis
+          - For each: name the specific technology/project AND quantify impact
+            (numbers, scale, outcomes — pull these from the candidate_evidence field)
+          - This is the "show, don't tell" paragraph
+
+        Paragraph 3 — Company alignment / honesty (2-3 sentences):
+          - Tie the candidate's approach to the company tone above
+          - If there's ONE significant weak match, address it briefly and honestly
+            (e.g. "While my Kubernetes production experience is recent, I've...")
+          - Never beg, never apologise for gaps
+
+        Paragraph 4 — Close (1-2 sentences):
+          - Clear, confident call to action (mention being available to discuss / interview)
+          - No "I would be eternally grateful", no "Thank you for your time" filler
+
+        SUBJECT LINE: 8-12 words. Reference the role + ONE standout qualification.
+          Good: "AI Engineer application — 2+ years building RAG systems"
+          Bad:  "Application for the AI Engineer position at your company"
+
+        FORBIDDEN PHRASES:
+          - "I am writing to apply"
+          - "I am passionate about"
+          - "I would be a great fit"
+          - "Please find attached"
+          - "Thank you for considering my application"
         """,
-        expected_output="Subject line and complete cover letter body.",
+        expected_output="Subject line (8-12 words) and a 250-350 word cover letter body with 4 paragraphs.",
         output_pydantic=CoverLetter,
         agent=agents["cover_letter_writer"],
     )
@@ -109,6 +153,8 @@ def build_application(cv: str, job_analysis: JobAnalysis) -> tuple[GapAnalysis, 
         tasks=[map_gaps, tailor_cv, write_cover_letter],
         process=Process.sequential,
         verbose=True,
+        max_rpm=2,   # Groq free tier: 12K TPM. 3 heavy tasks back-to-back blow the cap.
+                     # max_rpm=2 forces a ~60s wait before the 3rd task, letting TPM refill.
     ).kickoff()
 
     return (

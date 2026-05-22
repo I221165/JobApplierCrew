@@ -27,6 +27,28 @@ class Job(SQLModel, table=True):
     tone: Optional[str] = None
 
 
+class SavedSearch(SQLModel, table=True):
+    id: str = Field(primary_key=True)             # uuid4
+    role: str
+    location: str
+    max_jobs: int = 5
+    min_score: int = 60                           # only notify above this threshold
+    cv_snapshot: str                              # frozen CV at save time — scheduled runs use this, not whatever's in localStorage now
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_run_at: Optional[datetime] = None
+    last_run_status: Optional[str] = None         # "ok" or error message
+
+
+class Notification(SQLModel, table=True):
+    id: str = Field(primary_key=True)             # uuid4
+    saved_search_id: str = Field(foreign_key="savedsearch.id")
+    job_id: str = Field(foreign_key="job.id")
+    match_score: int                              # snapshot at notify time
+    read: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Application(SQLModel, table=True):
     id: str = Field(primary_key=True)             # uuid4
     job_id: str = Field(foreign_key="job.id")

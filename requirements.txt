@@ -8,3 +8,6 @@ fastapi
 uvicorn
 sqlmodel
 sse-starlette
+pypdf
+python-multipart
+apscheduler
